@@ -15,7 +15,6 @@ const getBrowserInfo = ua => {
     // Get referrer information
     let referrerSource = 'direct';
     if (document.referrer) {
-      // Don't try to parse the URL, just extract the hostname part
       referrerSource = document.referrer.split('/')[2] || utmSource || 'direct';
     } else if (utmSource) {
       referrerSource = utmSource;
@@ -28,22 +27,27 @@ const getBrowserInfo = ua => {
       screenSize: `${screen.width}x${screen.height}`,
       visitor: localStorage.getItem('isOwner') === 'true' ? 'Owner' : 'Visitor',
       startTime: start.toISOString(),
-      endTime: start.toISOString(), // Initially same as start time
+      endTime: start.toISOString(),
       timeOnPage: '0 seconds'
     };
   
-    // Send initial page visit data
+    // Helper function to send data using sendBeacon
+    const sendData = (data) => {
+      const blob = new Blob(
+        [new URLSearchParams(data).toString()],
+        {type: 'application/x-www-form-urlencoded'}
+      );
+      navigator.sendBeacon(URL, blob);
+    };
+  
+    // Send initial visit data
     try {
-      const params = new URLSearchParams(data);
-      const response = await fetch(`${URL}?${params.toString()}`);
-      if (!response.ok) {
-        console.error('Failed to send initial tracking data:', response.status);
-      }
+      sendData(data);
     } catch (e) {
       console.error('Error sending initial tracking data:', e);
     }
   
-    // Handle page navigation and closing
+    // Function to send final data
     const sendFinalData = () => {
       const end = new Date();
       const finalData = {
@@ -51,35 +55,31 @@ const getBrowserInfo = ua => {
         endTime: end.toISOString(),
         timeOnPage: `${Math.round((end - start) / 1000)} seconds`
       };
-  
-      // Use sendBeacon for more reliable data sending during page unload
-      try {
-        const successful = navigator.sendBeacon(URL, new URLSearchParams(finalData));
-        if (!successful) {
-          // Fallback to fetch if sendBeacon fails
-          fetch(URL, {
-            method: 'POST',
-            body: new URLSearchParams(finalData),
-            keepalive: true
-          }).catch(e => console.error('Error in fetch fallback:', e));
-        }
-      } catch (e) {
-        console.error('Error in sendBeacon:', e);
-      }
+      sendData(finalData);
     };
   
-    // Listen for both page hide and beforeunload events
-    window.addEventListener('pagehide', sendFinalData);
-    window.addEventListener('beforeunload', sendFinalData);
+    // Listen for page visibility changes
+    window.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        sendFinalData();
+      }
+    });
   
-    // Handle navigation within the site
+    // Listen for page hide with capture
+    window.addEventListener('pagehide', sendFinalData, {capture: true});
+  
+    // Handle internal navigation
     document.addEventListener('click', (e) => {
       const link = e.target.closest('a');
       if (link && link.href && link.href.includes(window.location.hostname)) {
-        sendFinalData();
+        setTimeout(sendFinalData, 0);
       }
     });
   };
   
-  // Initialize tracking
-  trackPageVisit();
+  // Initialize tracking when page is ready
+  if (document.readyState === 'complete') {
+    trackPageVisit();
+  } else {
+    window.addEventListener('load', trackPageVisit);
+  }
