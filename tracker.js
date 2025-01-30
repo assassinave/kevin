@@ -1,9 +1,7 @@
-// tracker.js
 (function() {
     'use strict';
     
-    // Configuration
-    const CONFIG = Object.freeze({
+    const CONFIG = {
         API_ENDPOINT: 'https://script.google.com/macros/s/AKfycbxtpR6C4zEjlZ5tRlYUbHPH1yBaXdk3YPX5hJZlV_av2oSm34C3obBqFy0chnjF1S_a/exec',
         ID_RANGE: { min: 1000, max: 2000 },
         SUPPORTED_PLATFORMS: ['Windows', 'Mac', 'Linux', 'Android', 'iOS'],
@@ -12,9 +10,8 @@
             VISITOR_ID: 'visitorId',
             IS_OWNER: 'isOwner'
         }
-    });
+    };
 
-    // Error handling
     class TrackingError extends Error {
         constructor(message, data) {
             super(message);
@@ -25,40 +22,43 @@
     }
 
     class VisitorTracker {
-        // Declare all private fields at the top of the class
         #state;
         #visitorId;
         #screenObserver;
         #performanceMarks;
 
         constructor() {
-            // Initialize fields in constructor
             this.#state = {
                 pageStart: null,
                 pageData: null,
                 isTracking: false,
                 currentRequest: null
             };
+
             this.#performanceMarks = new Map();
-            this.#visitorId = this.#initializeVisitorId();
+            this.#initializeVisitorId();
             this.#initializeScreenObserver();
             this.#bindEventHandlers();
         }
 
         #initializeVisitorId() {
             const stored = localStorage.getItem(CONFIG.STORAGE_KEYS.VISITOR_ID);
-            if (stored) return Number(stored);
+            if (stored && !isNaN(Number(stored))) {
+                this.#visitorId = Number(stored);
+                return;
+            }
 
-            const id = Math.floor(Math.random() * 
+            const randomId = Math.floor(Math.random() * 
                 (CONFIG.ID_RANGE.max - CONFIG.ID_RANGE.min + 1)) + 
                 CONFIG.ID_RANGE.min;
-            localStorage.setItem(CONFIG.STORAGE_KEYS.VISITOR_ID, String(id));
-            return id;
+            
+            localStorage.setItem(CONFIG.STORAGE_KEYS.VISITOR_ID, String(randomId));
+            this.#visitorId = randomId;
         }
 
         #initializeScreenObserver() {
             this.#screenObserver = new ResizeObserver(() => {
-                if (this.#state.pageData) {
+                if (this.#state?.pageData) {
                     this.#state.pageData['Screen Size'] = 
                         `${window.innerWidth}x${window.innerHeight}`;
                 }
@@ -67,19 +67,11 @@
         }
 
         #detectPlatform() {
-            if (navigator.userAgentData?.platform) {
-                return navigator.userAgentData.platform;
-            }
             return CONFIG.SUPPORTED_PLATFORMS.find(os => 
                 navigator.userAgent.includes(os)) || 'Unknown OS';
         }
 
         #detectBrowser() {
-            if (navigator.userAgentData?.brands) {
-                const brand = navigator.userAgentData.brands.find(b => 
-                    CONFIG.SUPPORTED_BROWSERS.includes(b.brand));
-                if (brand) return brand.brand;
-            }
             return CONFIG.SUPPORTED_BROWSERS.find(browser => 
                 navigator.userAgent.includes(browser)) || 'Unknown Browser';
         }
@@ -94,7 +86,7 @@
             const isOwner = localStorage.getItem(CONFIG.STORAGE_KEYS.IS_OWNER) === 'true';
             const visitorType = isOwner ? 'Owner' : 'Visitor';
 
-            return Object.freeze({
+            return {
                 'Timestamp': new Date().toISOString(),
                 'URL': location.href,
                 'Referrer': referrerSource,
@@ -102,14 +94,21 @@
                 'Screen Size': `${window.innerWidth}x${window.innerHeight}`,
                 'Visitor': `${visitorType} (ID: ${this.#visitorId})`,
                 'Time on Page': '0 seconds'
-            });
+            };
         }
 
         async #sendData(data) {
-            this.#state.currentRequest?.abort();
-            this.#state.currentRequest = new AbortController();
+            if (!data || typeof data !== 'object') {
+                throw new TrackingError('Invalid data format', { data });
+            }
 
+            if (this.#state.currentRequest) {
+                this.#state.currentRequest.abort();
+            }
+
+            this.#state.currentRequest = new AbortController();
             const params = new URLSearchParams(data);
+
             try {
                 const response = await fetch(`${CONFIG.API_ENDPOINT}?${params}`, {
                     signal: this.#state.currentRequest.signal
@@ -187,11 +186,11 @@
                 ? performance.measure('time-on-page', navigationMark).duration
                 : new Date().getTime() - this.#state.pageStart.getTime();
 
-            const finalData = Object.freeze({
+            const finalData = {
                 ...this.#state.pageData,
                 'Timestamp': new Date().toISOString(),
                 'Time on Page': `${Math.round(timeOnPage / 1000)} seconds`
-            });
+            };
 
             await this.#sendData(finalData);
             this.#state.isTracking = false;
@@ -207,11 +206,9 @@
         }
     }
 
-    // Create and initialize tracker
     const tracker = new VisitorTracker();
     tracker.startTracking();
 
-    // Expose for debugging in development
     if (window.location.hostname === 'webflow.io' || 
         window.location.hostname.includes('localhost')) {
         window.tracker = tracker;
