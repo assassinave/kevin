@@ -1,216 +1,85 @@
-(function() {
-    'use strict';
+const getBrowserInfo = ua => {
+    const os = ['Windows', 'Mac', 'Linux', 'Android', 'iOS'].find(os => ua.includes(os)) || 'Unknown OS';
+    const browser = ['Chrome', 'Firefox', 'Safari', 'Edge'].find(browser => ua.includes(browser)) || 'Unknown Browser';
+    return `${os}, ${browser}`;
+  };
+  
+  const trackPageVisit = async () => {
+    const start = new Date();
+    const URL = 'https://script.google.com/macros/s/AKfycbxtpR6C4zEjlZ5tRlYUbHPH1yBaXdk3YPX5hJZlV_av2oSm34C3obBqFy0chnjF1S_a/exec';
     
-    const CONFIG = {
-        API_ENDPOINT: 'https://script.google.com/macros/s/AKfycbxtpR6C4zEjlZ5tRlYUbHPH1yBaXdk3YPX5hJZlV_av2oSm34C3obBqFy0chnjF1S_a/exec',
-        ID_RANGE: { min: 1000, max: 2000 },
-        SUPPORTED_PLATFORMS: ['Windows', 'Mac', 'Linux', 'Android', 'iOS'],
-        SUPPORTED_BROWSERS: ['Chrome', 'Firefox', 'Safari', 'Edge'],
-        STORAGE_KEYS: {
-            VISITOR_ID: 'visitorId',
-            IS_OWNER: 'isOwner'
-        }
+    // Get URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const utmSource = urlParams.get('utm_source');
+    
+    // Get referrer information
+    let referrerSource = 'direct';
+    if (document.referrer) {
+      // Don't try to parse the URL, just extract the hostname part
+      referrerSource = document.referrer.split('/')[2] || utmSource || 'direct';
+    } else if (utmSource) {
+      referrerSource = utmSource;
+    }
+  
+    const data = {
+      url: window.location.href,
+      referrer: referrerSource,
+      userAgent: getBrowserInfo(navigator.userAgent),
+      screenSize: `${screen.width}x${screen.height}`,
+      visitor: localStorage.getItem('isOwner') === 'true' ? 'Owner' : 'Visitor',
+      startTime: start.toISOString(),
+      endTime: start.toISOString(), // Initially same as start time
+      timeOnPage: '0 seconds'
     };
-
-    class TrackingError extends Error {
-        constructor(message, data) {
-            super(message);
-            this.name = 'TrackingError';
-            this.data = data;
-            this.timestamp = new Date().toISOString();
-        }
+  
+    // Send initial page visit data
+    try {
+      const params = new URLSearchParams(data);
+      const response = await fetch(`${URL}?${params.toString()}`);
+      if (!response.ok) {
+        console.error('Failed to send initial tracking data:', response.status);
+      }
+    } catch (e) {
+      console.error('Error sending initial tracking data:', e);
     }
-
-    class VisitorTracker {
-        #state;
-        #visitorId;
-        #screenObserver;
-        #performanceMarks;
-
-        constructor() {
-            this.#state = {
-                pageStart: null,
-                pageData: null,
-                isTracking: false,
-                currentRequest: null
-            };
-
-            this.#performanceMarks = new Map();
-            this.#initializeVisitorId();
-            this.#initializeScreenObserver();
-            this.#bindEventHandlers();
+  
+    // Handle page navigation and closing
+    const sendFinalData = () => {
+      const end = new Date();
+      const finalData = {
+        ...data,
+        endTime: end.toISOString(),
+        timeOnPage: `${Math.round((end - start) / 1000)} seconds`
+      };
+  
+      // Use sendBeacon for more reliable data sending during page unload
+      try {
+        const successful = navigator.sendBeacon(URL, new URLSearchParams(finalData));
+        if (!successful) {
+          // Fallback to fetch if sendBeacon fails
+          fetch(URL, {
+            method: 'POST',
+            body: new URLSearchParams(finalData),
+            keepalive: true
+          }).catch(e => console.error('Error in fetch fallback:', e));
         }
-
-        #initializeVisitorId() {
-            const stored = localStorage.getItem(CONFIG.STORAGE_KEYS.VISITOR_ID);
-            if (stored && !isNaN(Number(stored))) {
-                this.#visitorId = Number(stored);
-                return;
-            }
-
-            const randomId = Math.floor(Math.random() * 
-                (CONFIG.ID_RANGE.max - CONFIG.ID_RANGE.min + 1)) + 
-                CONFIG.ID_RANGE.min;
-            
-            localStorage.setItem(CONFIG.STORAGE_KEYS.VISITOR_ID, String(randomId));
-            this.#visitorId = randomId;
-        }
-
-        #initializeScreenObserver() {
-            this.#screenObserver = new ResizeObserver(() => {
-                if (this.#state?.pageData) {
-                    this.#state.pageData['Screen Size'] = 
-                        `${window.innerWidth}x${window.innerHeight}`;
-                }
-            });
-            this.#screenObserver.observe(document.documentElement);
-        }
-
-        #detectPlatform() {
-            return CONFIG.SUPPORTED_PLATFORMS.find(os => 
-                navigator.userAgent.includes(os)) || 'Unknown OS';
-        }
-
-        #detectBrowser() {
-            return CONFIG.SUPPORTED_BROWSERS.find(browser => 
-                navigator.userAgent.includes(browser)) || 'Unknown Browser';
-        }
-
-        #getBasicData() {
-            const urlParams = new URLSearchParams(window.location.search);
-            const utmSource = urlParams.get('utm_source');
-            const referrerSource = document.referrer 
-                ? new URL(document.referrer).hostname
-                : (utmSource || 'direct');
-
-            const isOwner = localStorage.getItem(CONFIG.STORAGE_KEYS.IS_OWNER) === 'true';
-            const visitorType = isOwner ? 'Owner' : 'Visitor';
-
-            return {
-                'Timestamp': new Date().toISOString(),
-                'URL': location.href,
-                'Referrer': referrerSource,
-                'User Agent': `${this.#detectPlatform()}, ${this.#detectBrowser()}`,
-                'Screen Size': `${window.innerWidth}x${window.innerHeight}`,
-                'Visitor': `${visitorType} (ID: ${this.#visitorId})`,
-                'Time on Page': '0 seconds'
-            };
-        }
-
-        async #sendData(data) {
-            if (!data || typeof data !== 'object') {
-                throw new TrackingError('Invalid data format', { data });
-            }
-
-            if (this.#state.currentRequest) {
-                this.#state.currentRequest.abort();
-            }
-
-            this.#state.currentRequest = new AbortController();
-            const params = new URLSearchParams(data);
-
-            try {
-                const response = await fetch(`${CONFIG.API_ENDPOINT}?${params}`, {
-                    signal: this.#state.currentRequest.signal
-                });
-                
-                if (!response.ok) {
-                    throw new TrackingError('API request failed', {
-                        status: response.status,
-                        statusText: response.statusText
-                    });
-                }
-            } catch (error) {
-                if (error.name === 'AbortError') return;
-                console.error('Tracking error:', error);
-                
-                if (navigator.sendBeacon) {
-                    navigator.sendBeacon(CONFIG.API_ENDPOINT, params);
-                }
-            }
-        }
-
-        #bindEventHandlers() {
-            window.addEventListener('popstate', this.#handleNavigation.bind(this));
-            window.addEventListener('beforeunload', this.#handleUnload.bind(this));
-            
-            const originalPushState = history.pushState;
-            const originalReplaceState = history.replaceState;
-            
-            history.pushState = (...args) => {
-                originalPushState.apply(history, args);
-                this.#handleNavigation();
-            };
-            
-            history.replaceState = (...args) => {
-                originalReplaceState.apply(history, args);
-                this.#handleNavigation();
-            };
-        }
-
-        async #handleNavigation() {
-            const performanceMark = `navigation-${Date.now()}`;
-            performance.mark(performanceMark);
-            this.#performanceMarks.set('lastNavigation', performanceMark);
-
-            if (this.#state.isTracking && 
-                this.#state.pageData?.URL === location.href) {
-                return;
-            }
-
-            if (this.#state.isTracking) {
-                await this.#sendFinalPageData();
-            }
-
-            this.#state.pageStart = new Date();
-            this.#state.pageData = this.#getBasicData();
-            this.#state.isTracking = true;
-
-            await this.#sendData(this.#state.pageData);
-        }
-
-        async #handleUnload() {
-            if (this.#state.isTracking) {
-                await this.#sendFinalPageData();
-            }
-            this.#screenObserver.disconnect();
-        }
-
-        async #sendFinalPageData() {
-            if (!this.#state.isTracking || !this.#state.pageData || !this.#state.pageStart) {
-                return;
-            }
-
-            const navigationMark = this.#performanceMarks.get('lastNavigation');
-            const timeOnPage = navigationMark 
-                ? performance.measure('time-on-page', navigationMark).duration
-                : new Date().getTime() - this.#state.pageStart.getTime();
-
-            const finalData = {
-                ...this.#state.pageData,
-                'Timestamp': new Date().toISOString(),
-                'Time on Page': `${Math.round(timeOnPage / 1000)} seconds`
-            };
-
-            await this.#sendData(finalData);
-            this.#state.isTracking = false;
-        }
-
-        startTracking() {
-            this.#handleNavigation();
-        }
-
-        destroy() {
-            this.#handleUnload();
-            this.#performanceMarks.clear();
-        }
-    }
-
-    const tracker = new VisitorTracker();
-    tracker.startTracking();
-
-    if (window.location.hostname === 'webflow.io' || 
-        window.location.hostname.includes('localhost')) {
-        window.tracker = tracker;
-    }
-})();
+      } catch (e) {
+        console.error('Error in sendBeacon:', e);
+      }
+    };
+  
+    // Listen for both page hide and beforeunload events
+    window.addEventListener('pagehide', sendFinalData);
+    window.addEventListener('beforeunload', sendFinalData);
+  
+    // Handle navigation within the site
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a');
+      if (link && link.href && link.href.includes(window.location.hostname)) {
+        sendFinalData();
+      }
+    });
+  };
+  
+  // Initialize tracking
+  trackPageVisit();
